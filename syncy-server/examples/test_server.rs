@@ -8,7 +8,7 @@ use syncy_server::server::WsServer;
 use syncy_server::session::WsSession;
 use yrs::block::ClientID;
 
-const PAYLOAD_SIZE_LIMIT: usize = 2 * 1024 * 1024; // 2MiB
+const PAYLOAD_SIZE_LIMIT: usize = 64 * 1024 * 1024; // 2MiB
 
 #[actix::main]
 async fn main() -> Result<(), actix_web::Error> {
@@ -20,7 +20,6 @@ async fn main() -> Result<(), actix_web::Error> {
     HttpServer::new(move || {
         App::new()
             .app_data(web::Data::new(ws_server.clone()))
-            .app_data(web::PayloadConfig::new(PAYLOAD_SIZE_LIMIT))
             .route("/docs/", web::get().to(ws_handler))
     })
     .bind(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, PORT)))?
@@ -40,7 +39,9 @@ async fn ws_handler(
     };
     let ws_server = server.get_ref().clone();
     tracing::trace!("accepting new session `{}`", client_id);
-    ws::start(WsSession::new(client_id, ws_server), &req, stream)
+    ws::WsResponseBuilder::new(WsSession::new(client_id, ws_server), &req, stream)
+        .frame_size(PAYLOAD_SIZE_LIMIT)
+        .start()
 }
 
 fn get_client_id(req: &HttpRequest) -> Option<ClientID> {

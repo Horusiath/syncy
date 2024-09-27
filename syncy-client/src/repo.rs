@@ -1,3 +1,4 @@
+use bytes::BytesMut;
 use dashmap::{DashMap, Entry};
 use futures_sink::Sink;
 use futures_util::stream::StreamExt;
@@ -7,6 +8,8 @@ use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 use tokio_tungstenite::connect_async_with_config;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::http::{HeaderValue, Uri};
+use tokio_tungstenite::tungstenite::protocol::frame::coding::{Data, OpCode};
+use tokio_tungstenite::tungstenite::protocol::frame::Frame;
 use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 use tokio_tungstenite::tungstenite::Message;
 use uuid::Uuid;
@@ -17,6 +20,8 @@ use yrs::sync::{Awareness, MessageReader, SyncMessage};
 use yrs::updates::decoder::{Decode, DecoderV1};
 use yrs::updates::encoder::{Encode, Encoder, EncoderV1};
 use yrs::{AsyncTransact, Doc, OffsetKind, Origin, ReadTxn, Update};
+
+pub const MAX_FRAME_SIZE: usize = 128 * 1024; // 128KiB
 
 pub struct DocRepo {
     url: Uri,
@@ -30,12 +35,14 @@ impl DocRepo {
     where
         R: IntoClientRequest,
     {
-        let config = Some(WebSocketConfig::default());
+        let mut config = WebSocketConfig::default();
+        config.max_frame_size = None;
+
         let mut req = req.into_client_request()?;
         let url = req.uri().clone();
         req.headers_mut()
             .append("X-YRS-CLIENT-ID", HeaderValue::from(client_id));
-        let (ws_stream, _resp) = connect_async_with_config(req, config, false).await?;
+        let (ws_stream, _resp) = connect_async_with_config(req, Some(config), false).await?;
         // channel to send data to the server
         let (outbound_tx, outbound_rx) = unbounded_channel();
         let (sink, stream) = ws_stream.split();
@@ -126,6 +133,7 @@ impl DocRepo {
     where
         S: Stream<Item = Result<Message, tokio_tungstenite::tungstenite::Error>> + Unpin,
     {
+        let mut buf = BytesMut::new();
         while let Some(result) = stream.next().await {
             let message = result?;
             let docs = match docs.upgrade() {
@@ -150,7 +158,13 @@ impl DocRepo {
                     return Ok(());
                 }
                 Message::Frame(frame) => {
-                    panic!("frame received (?!): {:?}", frame)
+                    let header = frame.header();
+                    buf.extend_from_slice(frame.payload().as_ref());
+                    if header.is_final {
+                        let bytes = std::mem::take(&mut buf);
+                        tracing::trace!("finalized split frames: {} bytes", bytes.len());
+                        Self::handle_inbound_message(client_id, &docs, &bytes, &outbound_tx).await?
+                    }
                 }
             }
         }
@@ -176,12 +190,7 @@ impl DocRepo {
         };
         for result in reader {
             let msg = result?;
-            tracing::trace!(
-                "client {} handling doc `{}` message: {:?}",
-                client_id,
-                doc_id,
-                msg
-            );
+            tracing::trace!("client {} handling doc `{}` message", client_id, doc_id);
             match msg {
                 yrs::sync::Message::Sync(SyncMessage::SyncStep1(sv)) => {
                     let tx = doc.transact().await;
@@ -251,8 +260,42 @@ impl DocRepo {
         S: Sink<Message, Error = tokio_tungstenite::tungstenite::Error> + Unpin,
     {
         while let Some(msg) = outbound_rx.recv().await {
-            tracing::trace!("sending message: {} bytes", msg.len());
-            sink.send(msg).await?;
+            let len = msg.len();
+            if len <= MAX_FRAME_SIZE {
+                tracing::trace!("sending message: {} bytes", len);
+                sink.send(msg).await?;
+            } else if let Message::Binary(bytes) = msg {
+                tracing::trace!("sending message: {} bytes (frame split)", len);
+                Self::send_as_frames(&mut sink, bytes).await?;
+            } else {
+                tracing::warn!("non-binary message too big to be send: {} bytes", len)
+            }
+        }
+        Ok(())
+    }
+
+    async fn send_as_frames<S>(sink: &mut S, data: Vec<u8>) -> crate::Result<()>
+    where
+        S: Sink<Message, Error = tokio_tungstenite::tungstenite::Error> + Unpin,
+    {
+        let mut consumed = 0;
+        while consumed < data.len() {
+            let op_code = if consumed == 0 {
+                OpCode::Data(Data::Binary)
+            } else {
+                OpCode::Data(Data::Continue)
+            };
+            let mut end = consumed + MAX_FRAME_SIZE;
+            let mut is_final = false;
+            if end >= data.len() {
+                end = data.len();
+                is_final = true;
+            }
+
+            let slice = &data[consumed..end];
+            let frame = Frame::message(slice.into(), op_code, is_final);
+            sink.send(Message::Frame(frame)).await?;
+            consumed = end;
         }
         Ok(())
     }

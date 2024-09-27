@@ -7,7 +7,6 @@ use actix_http::ws::{CloseCode, CloseReason, Item, ProtocolError};
 use actix_web_actors::ws;
 use bytes::{Bytes, BytesMut};
 use std::time::{Duration, Instant};
-use uuid::Uuid;
 use yrs::block::ClientID;
 
 pub const HEARTBEAT: Duration = Duration::from_secs(5);
@@ -100,8 +99,12 @@ impl Handler<Message> for WsSession {
     type Result = ();
 
     fn handle(&mut self, msg: Message, ctx: &mut Self::Context) {
+        tracing::trace!(
+            "sending message through session `{}`: {} bytes",
+            self.id,
+            msg.0.len()
+        );
         ctx.binary(msg.0);
-        tracing::trace!("session `{}` sent message", self.id);
     }
 }
 
@@ -109,14 +112,12 @@ impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for WsSession {
     fn handle(&mut self, item: Result<ws::Message, ProtocolError>, ctx: &mut Self::Context) {
         match item {
             Ok(message) => {
+                self.hb = Instant::now();
                 match message {
                     ws::Message::Ping(bytes) => {
-                        self.hb = Instant::now();
                         ctx.pong(&bytes);
                     }
-                    ws::Message::Pong(_) => {
-                        self.hb = Instant::now();
-                    }
+                    ws::Message::Pong(_) => {}
                     ws::Message::Text(_) => ctx.close(Some(CloseReason::from((
                         CloseCode::Unsupported,
                         "only binary content is supported",
@@ -124,34 +125,36 @@ impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for WsSession {
                     ws::Message::Binary(bytes) => {
                         self.handle_protocol(bytes, ctx);
                     }
-                    ws::Message::Continuation(item) => match item {
-                        Item::FirstText(_) => ctx.close(Some(CloseReason::from((
-                            CloseCode::Unsupported,
-                            "only binary content is supported",
-                        )))),
-                        Item::FirstBinary(bytes) => self.buf = Some(bytes.into()),
-                        Item::Continue(bytes) => {
-                            if let Some(ref mut buf) = self.buf {
-                                buf.extend_from_slice(&bytes);
-                            } else {
-                                ctx.close(Some(CloseReason::from((
-                                    CloseCode::Protocol,
-                                    "continuation frame without initialization",
-                                )))); // unexpected
+                    ws::Message::Continuation(item) => {
+                        match item {
+                            Item::FirstText(_) => ctx.close(Some(CloseReason::from((
+                                CloseCode::Unsupported,
+                                "only binary content is supported",
+                            )))),
+                            Item::FirstBinary(bytes) => self.buf = Some(bytes.into()),
+                            Item::Continue(bytes) => {
+                                if let Some(ref mut buf) = self.buf {
+                                    buf.extend_from_slice(&bytes);
+                                } else {
+                                    ctx.close(Some(CloseReason::from((
+                                        CloseCode::Protocol,
+                                        "continuation frame without initialization",
+                                    )))); // unexpected
+                                }
+                            }
+                            Item::Last(bytes) => {
+                                if let Some(mut buf) = self.buf.take() {
+                                    buf.extend_from_slice(&bytes);
+                                    self.handle_protocol(buf.freeze(), ctx);
+                                } else {
+                                    ctx.close(Some(CloseReason::from((
+                                        CloseCode::Protocol,
+                                        "last frame without initialization",
+                                    )))); // unexpected
+                                }
                             }
                         }
-                        Item::Last(bytes) => {
-                            if let Some(mut buf) = self.buf.take() {
-                                buf.extend_from_slice(&bytes);
-                                self.handle_protocol(buf.freeze(), ctx);
-                            } else {
-                                ctx.close(Some(CloseReason::from((
-                                    CloseCode::Protocol,
-                                    "last frame without initialization",
-                                )))); // unexpected
-                            }
-                        }
-                    },
+                    }
                     ws::Message::Close(reason) => {
                         ctx.close(reason);
                         ctx.stop();
