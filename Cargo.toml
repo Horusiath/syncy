@@ -1,0 +1,15 @@
+[workspace]
+resolver = "2"
+members = ["syncy-client", "syncy-server"]
+
+[workspace.dependencies]
+yrs = { version = "0.21.1", features = ["sync"] }
+tokio = { version = "1.40", features = ["full"] }
+tokio-util = { version = "0.7.12", features = ["full"] }
+thiserror = "1.0.64"
+async-trait = "0.1.83"
+futures-lite = "2.3.0"
+bytes = { version = "1.7", features = ["serde"] }
+tracing = { version = "0.1.40", features = ["log"] }
+uuid = { version = "1.10", features = ["v7"] }
+zstd = { version = "0.13" }
