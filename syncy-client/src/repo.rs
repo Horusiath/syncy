@@ -75,13 +75,24 @@ impl DocRepo {
         &self.url
     }
 
-    pub fn doc(&self, doc_id: Uuid) -> crate::Result<Doc> {
+    pub fn load(&self, doc_id: Uuid) -> crate::Result<Doc> {
         match self.docs.entry(doc_id) {
             Entry::Occupied(e) => Ok(e.get().clone()),
             Entry::Vacant(e) => {
                 let doc = Self::init_doc(self.client_id, doc_id, self.outbound.clone());
                 Ok(e.insert(doc).value().clone())
             }
+        }
+    }
+
+    pub fn unload(&self, doc_id: &Uuid) -> crate::Result<bool> {
+        //TODO: we also need some sort of message to gracefully unsubscribe
+        // current user from the document on the server side.
+        if let Some((_, doc)) = self.docs.remove(doc_id) {
+            tracing::debug!("document `{}` unloaded", doc_id);
+            Ok(true)
+        } else {
+            Ok(false)
         }
     }
 

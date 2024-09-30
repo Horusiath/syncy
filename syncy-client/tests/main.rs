@@ -20,7 +20,7 @@ async fn one_update() {
 
     // setup awaiter on peer 2
     let notify = {
-        let d2 = p2.doc(doc_id).unwrap();
+        let d2 = p2.load(doc_id).unwrap();
         let notify = Arc::new(Notify::new());
         let n = notify.clone();
         d2.observe_update_v1_with("test-awaiter", move |_, _| n.notify_waiters())
@@ -30,7 +30,7 @@ async fn one_update() {
 
     // make a change on peer 1
     {
-        let d1 = p1.doc(doc_id).unwrap();
+        let d1 = p1.load(doc_id).unwrap();
         let client_id = d1.client_id();
         let mut tx = d1.transact_mut_with(client_id).await;
         let map = tx.get_or_insert_map("map");
@@ -42,7 +42,7 @@ async fn one_update() {
         .await
         .unwrap();
 
-    let d2 = p2.doc(doc_id).unwrap();
+    let d2 = p2.load(doc_id).unwrap();
     let tx = d2.transact().await;
     let map = tx.get_map("map").unwrap();
     let value = map.get(&tx, "key");
@@ -64,7 +64,7 @@ async fn big_update() {
 
     // setup awaiter on peer 2
     let notify = {
-        let d2 = p2.doc(doc_id).unwrap();
+        let d2 = p2.load(doc_id).unwrap();
         let notify = Arc::new(Notify::new());
         let n = notify.clone();
         d2.observe_update_v1_with("test-awaiter", move |_, _| n.notify_waiters())
@@ -75,7 +75,7 @@ async fn big_update() {
     // make a change on peer 1
     let start = Instant::now();
     {
-        let d1 = p1.doc(doc_id).unwrap();
+        let d1 = p1.load(doc_id).unwrap();
         let client_id = d1.client_id();
         let mut tx = d1.transact_mut_with(client_id).await;
         let map = tx.get_or_insert_map("map");
@@ -88,7 +88,7 @@ async fn big_update() {
         .unwrap();
     println!("sync completed in {:?}", start.elapsed());
 
-    let d2 = p2.doc(doc_id).unwrap();
+    let d2 = p2.load(doc_id).unwrap();
     let tx = d2.transact().await;
     let map = tx.get_map("map").unwrap();
     let actual = map.get(&tx, "key");
@@ -106,7 +106,7 @@ async fn lot_of_updates() {
 
     // setup awaiter on peer 2
     let notify = {
-        let d2 = p2.doc(doc_id).unwrap();
+        let d2 = p2.load(doc_id).unwrap();
         let notify = Arc::new(Notify::new());
         let n = notify.clone();
         let counter = AtomicU32::new(0);
@@ -123,7 +123,7 @@ async fn lot_of_updates() {
     // make a change on peer 1
     let start = Instant::now();
     {
-        let d1 = p1.doc(doc_id).unwrap();
+        let d1 = p1.load(doc_id).unwrap();
         let client_id = d1.client_id();
         for i in 0..=UPDATE_COUNT {
             let mut tx = d1.transact_mut_with(client_id).await;
@@ -138,7 +138,7 @@ async fn lot_of_updates() {
         .unwrap();
     println!("sync completed in {:?}", start.elapsed());
 
-    let d2 = p2.doc(doc_id).unwrap();
+    let d2 = p2.load(doc_id).unwrap();
     let tx = d2.transact().await;
     let map = tx.get_map("map").unwrap();
     let actual = map.get(&tx, "key");

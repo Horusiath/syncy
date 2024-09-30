@@ -18,6 +18,7 @@ tokio-tungstenite = { version = "0.24", features = ["stream"] }
 futures-sink = "0.3.30"
 futures-util = "0.3.30"
 dashmap = "6.1.0"
+yrs-lmdb = "0.3.0"
 
 [dev-dependencies]
 tempfile = "3.12"
